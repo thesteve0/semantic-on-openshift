@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: semantic-router-service
+  namespace: vllm-semantic-router-system
+  labels:
+    app: semantic-router
+    component: intelligent-router
+spec:
+  selector:
+    app: semantic-router
+  ports:
+    # Main HTTP port - Envoy proxy entry point
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8801
+
+    # Metrics port - Prometheus metrics
+    - name: metrics
+      protocol: TCP
+      port: 9190
+      targetPort: 9190
+
+    # Classify API port - Direct semantic router HTTP API
+    - name: classify-api
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+
+    # Admin port - Envoy admin interface
+    - name: admin
+      protocol: TCP
+      port: 19000
+      targetPort: 19000
+
+  type: ClusterIP

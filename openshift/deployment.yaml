@@ -1,0 +1,152 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: semantic-router
+  namespace: vllm-semantic-router-system
+  labels:
+    app: semantic-router
+    component: intelligent-router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: semantic-router
+  template:
+    metadata:
+      labels:
+        app: semantic-router
+        component: intelligent-router
+    spec:
+      # No GPU needed - semantic router uses CPU-based Rust/Candle inference
+      containers:
+        # Semantic Router ExtProc Service
+        - name: semantic-router
+          # REPLACE with your custom image path after building
+          image: ghcr.io/thesteve0/semantic-router-with-models:v1.0.0
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - containerPort: 50051
+              name: grpc
+              protocol: TCP
+            - containerPort: 9190
+              name: metrics
+              protocol: TCP
+            - containerPort: 8080
+              name: classify-api
+              protocol: TCP
+          env:
+            # Point to models baked into the image
+            - name: MODELS_DIR
+              value: "/app/models"
+            # Cache directories for runtime operations
+            - name: HF_HOME
+              value: "/app/cache/hf"
+            - name: TRANSFORMERS_CACHE
+              value: "/app/cache/transformers"
+            - name: XDG_CACHE_HOME
+              value: "/app/cache/xdg"
+            - name: HOME
+              value: "/tmp/home"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/config
+              readOnly: true
+            - name: cache-volume
+              mountPath: /app/cache
+          livenessProbe:
+            tcpSocket:
+              port: 50051
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 50051
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "2"
+
+        # Envoy Proxy - ExtProc integration
+        - name: envoy-proxy
+          image: envoyproxy/envoy:v1.35.3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8801
+              name: http
+              protocol: TCP
+            - containerPort: 19000
+              name: admin
+              protocol: TCP
+          command: ["/usr/local/bin/envoy"]
+          args:
+            - "-c"
+            - "/etc/envoy/envoy.yaml"
+            - "--component-log-level"
+            - "ext_proc:info,router:info,http:info"
+          env:
+            - name: loglevel
+              value: "info"
+          volumeMounts:
+            - name: envoy-config-volume
+              mountPath: /etc/envoy
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 19000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 19000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+      volumes:
+        # ConfigMap for semantic router configuration (endpoints, routing rules)
+        - name: config-volume
+          configMap:
+            name: semantic-router-config
+        # ConfigMap for Envoy proxy configuration
+        - name: envoy-config-volume
+          configMap:
+            name: envoy-config
+        # PVC for runtime caching only (not for models anymore)
+        - name: cache-volume
+          persistentVolumeClaim:
+            claimName: semantic-router-cache
