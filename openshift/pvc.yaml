@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: semantic-router-cache
+  namespace: vllm-semantic-router-system
+  labels:
+    app: semantic-router
+    component: cache-storage
+spec:
+  accessModes:
+    - ReadWriteOnce  # Single pod access (semantic-router pod)
+  resources:
+    requests:
+      storage: 5Gi  # 5GB for runtime caching (HF cache, transformers, etc.)
+  # storageClassName not specified - uses cluster default dynamic provisioner
+  # If you need a specific storage class, add: storageClassName: <your-storage-class>

@@ -1,0 +1,312 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: semantic-router-config
+  namespace: vllm-semantic-router-system
+  labels:
+    app: semantic-router
+    component: configuration
+data:
+  config.yaml: |
+    # ============================================================================
+    # Semantic Router Configuration
+    # ============================================================================
+    # This configuration file defines how the semantic router classifies requests,
+    # applies security policies, and routes to backend LLM services.
+    
+    # ============================================================================
+    # BERT Model Configuration - Semantic Embedding
+    # ============================================================================
+    # Used for semantic similarity matching and caching
+    bert_model:
+      model_id: sentence-transformers/all-MiniLM-L12-v2
+      threshold: 0.6
+      use_cpu: true  # Use CPU inference for BERT embeddings
+    
+    # ============================================================================
+    # Semantic Cache Configuration
+    # ============================================================================
+    # Caches responses based on semantic similarity to reduce redundant inference
+    semantic_cache:
+      enabled: true
+      backend_type: "memory"  # Options: "memory" or "milvus"
+      similarity_threshold: 0.8  # How similar queries must be for cache hit
+      max_entries: 1000  # Maximum cached responses (memory backend only)
+      ttl_seconds: 3600  # Time-to-live: 1 hour
+      eviction_policy: "fifo"  # First-in-first-out when max_entries reached
+    
+    # ============================================================================
+    # Tools Database Configuration
+    # ============================================================================
+    # Automatic tool selection based on query content
+    tools:
+      enabled: true
+      top_k: 3  # Return top 3 most relevant tools
+      similarity_threshold: 0.2
+      tools_db_path: "config/tools_db.json"
+      fallback_to_empty: true  # Return empty list if no tools match
+    
+    # ============================================================================
+    # Prompt Guard - Jailbreak Detection
+    # ============================================================================
+    # Detects and blocks jailbreak attempts and prompt injections
+    prompt_guard:
+      enabled: true
+      use_modernbert: true
+      model_id: "models/jailbreak_classifier_modernbert-base_model"
+      threshold: 0.7  # Confidence threshold for jailbreak detection
+      use_cpu: true
+      jailbreak_mapping_path: "models/jailbreak_classifier_modernbert-base_model/jailbreak_type_mapping.json"
+    
+    # ============================================================================
+    # vLLM Endpoint Configuration
+    # ============================================================================
+    # IMPORTANT: These endpoints currently point to non-existent services
+    # When you deploy actual LLM services, update these addresses to:
+    # - Kubernetes service names (e.g., "model-a-service.namespace.svc.cluster.local")
+    # - Or external endpoints if using hosted models
+    vllm_endpoints:
+      - name: "mistral-small-24b-instruct-2501-fp8-dynamic-150"
+        address: 172.30.95.11  # this is the service IP in the cluster
+        port: 80
+        weight: 1  # Load balancing weight
+
+      - name: "model-b-endpoint"
+        address: 127.0.0.1  # Phase 1: Localhost (no backend yet)
+        port: 8000
+        weight: 1
+    
+    # ============================================================================
+    # Model Configuration - Per-Model Settings
+    # ============================================================================
+    # Defines model-specific behavior, reasoning capabilities, and PII policies
+    model_config:
+      "mistral-small-24b-instruct-2501-fp8-dynamic-150":
+        preferred_endpoints: ["mistral-small-24b-instruct-2501-fp8-dynamic-150"]
+        pii_policy:
+          allow_by_default: false  # Block all PII by default
+          pii_types_allowed: ["EMAIL_ADDRESS"]  # Only allow emails through
+      
+      "Model-B":
+        reasoning_family: "qwen3"
+        preferred_endpoints: ["model-b-endpoint"]
+        pii_policy:
+          allow_by_default: false
+          pii_types_allowed: ["EMAIL_ADDRESS"]
+    
+    # ============================================================================
+    # Classifier Configuration - ModernBERT Models
+    # ============================================================================
+    # Configuration for the classification models baked into your container image
+    classifier:
+      # Category classification - determines query topic/domain
+      category_model:
+        model_id: "models/category_classifier_modernbert-base_model"
+        use_modernbert: true
+        threshold: 0.6  # Minimum confidence for category classification
+        use_cpu: true  # Use CPU inference (Rust/Candle)
+        category_mapping_path: "models/category_classifier_modernbert-base_model/category_mapping.json"
+      
+      # PII detection - identifies personally identifiable information
+      pii_model:
+        model_id: "models/pii_classifier_modernbert-base_presidio_token_model"
+        use_modernbert: true
+        threshold: 0.7
+        use_cpu: true
+        pii_mapping_path: "models/pii_classifier_modernbert-base_presidio_token_model/pii_type_mapping.json"
+    
+    # ============================================================================
+    # Category Definitions - 15 Specialized Categories
+    # ============================================================================
+    # Each category has:
+    # - name: Category identifier
+    # - system_prompt: Contextual prompt for the LLM
+    # - model_scores: Which model to use and whether to enable reasoning
+    categories:
+      # ------------------------------------------------------------------------
+      # STEM Categories
+      # ------------------------------------------------------------------------
+      - name: math
+        system_prompt: "You are a mathematics expert with deep knowledge of algebra, calculus, geometry, statistics, and mathematical reasoning. Provide step-by-step solutions, show your work clearly, explain mathematical concepts in an understandable way, and verify your answers. When solving problems, break down complex calculations into manageable steps."
+        model_scores:
+          - model: Model-A
+            score: 1.0  # Best model for math
+            use_reasoning: false  # Enable reasoning for complex math problems
+      
+      - name: physics
+        system_prompt: "You are a physics expert with comprehensive understanding of classical mechanics, thermodynamics, electromagnetism, quantum mechanics, and relativity. Provide clear explanations grounded in physical laws, include mathematical derivations when appropriate, and connect theoretical concepts to real-world phenomena. Use SI units consistently."
+        model_scores:
+          - model: Model-A
+            score: 0.7
+            use_reasoning: false  # Physics benefits from step-by-step reasoning
+      
+      - name: chemistry
+        system_prompt: "You are a chemistry expert specializing in organic, inorganic, physical, and analytical chemistry. Explain chemical reactions with balanced equations, discuss molecular structures and bonding, describe laboratory techniques safely, and connect chemistry concepts to practical applications. Always emphasize safety when discussing chemical procedures."
+        model_scores:
+          - model: Model-A
+            score: 0.6
+            use_reasoning: false  # Complex chemistry requires reasoning
+      
+      - name: biology
+        system_prompt: "You are a biology expert with comprehensive knowledge spanning molecular biology, genetics, cell biology, ecology, evolution, anatomy, physiology, and biotechnology. Explain biological concepts with scientific accuracy, use appropriate terminology, provide examples from current research, and emphasize the interconnectedness of biological systems."
+        model_scores:
+          - model: Model-A
+            score: 0.9
+            use_reasoning: false
+      
+      - name: computer science
+        system_prompt: "You are a computer science expert with deep knowledge of algorithms, data structures, programming languages, software engineering, databases, networks, and computer architecture. Provide clear, practical solutions with well-commented code examples when helpful. Explain time and space complexity, discuss trade-offs, and follow best practices."
+        model_scores:
+          - model: Model-A
+            score: 0.6
+            use_reasoning: false
+      
+      - name: engineering
+        system_prompt: "You are an engineering expert with knowledge across mechanical, electrical, civil, chemical, software, and systems engineering disciplines. Apply engineering principles, design methodologies, and problem-solving approaches to provide practical solutions. Consider safety, efficiency, sustainability, and cost-effectiveness. Use technical precision while explaining concepts clearly."
+        model_scores:
+          - model: Model-A
+            score: 0.7
+            use_reasoning: false
+      
+      # ------------------------------------------------------------------------
+      # Social Sciences and Humanities
+      # ------------------------------------------------------------------------
+      - name: business
+        system_prompt: "You are a senior business consultant and strategic advisor with expertise in corporate strategy, operations management, financial analysis, marketing, and organizational development. Provide practical, actionable business advice backed by proven methodologies and industry best practices. Consider market dynamics, competitive landscape, and stakeholder interests in your recommendations."
+        model_scores:
+          - model: Model-B
+            score: 0.7
+            use_reasoning: false  # Business performs better without reasoning
+      
+      - name: economics
+        system_prompt: "You are an economics expert with deep understanding of microeconomics, macroeconomics, econometrics, financial markets, monetary policy, fiscal policy, and international trade. Analyze economic phenomena using established principles, provide data-driven insights, and explain complex economic concepts in accessible terms. Consider both theoretical frameworks and real-world applications."
+        model_scores:
+          - model: Model-A
+            score: 1.0
+            use_reasoning: false
+      
+      - name: law
+        system_prompt: "You are a knowledgeable legal expert with comprehensive understanding of legal principles, case law, statutory interpretation, and legal procedures across multiple jurisdictions. Provide accurate legal information and analysis while clearly stating that your responses are for informational purposes only and do not constitute legal advice. Always recommend consulting qualified legal professionals for specific matters."
+        model_scores:
+          - model: Model-B
+            score: 0.4
+            use_reasoning: false
+      
+      - name: psychology
+        system_prompt: "You are a psychology expert with deep knowledge of cognitive processes, behavioral patterns, mental health, developmental psychology, social psychology, and therapeutic approaches. Provide evidence-based insights grounded in psychological research and theory. When discussing mental health topics, emphasize the importance of professional consultation and avoid providing diagnostic or therapeutic advice."
+        model_scores:
+          - model: Model-B
+            score: 0.6
+            use_reasoning: false
+      
+      - name: philosophy
+        system_prompt: "You are a philosophy expert with comprehensive knowledge of philosophical traditions, ethical theories, logic, metaphysics, epistemology, and political philosophy. Engage with complex philosophical questions by presenting multiple perspectives, analyzing arguments rigorously, and encouraging critical thinking. Draw connections between philosophical concepts and contemporary issues."
+        model_scores:
+          - model: Model-B
+            score: 0.5
+            use_reasoning: false
+      
+      - name: history
+        system_prompt: "You are a historian with expertise across different time periods, regions, and cultures. Provide accurate historical context, analyze cause-and-effect relationships, discuss multiple perspectives, and connect past events to present-day implications. Cite specific dates, events, and historical figures when relevant. Acknowledge historiographical debates and evolving interpretations."
+        model_scores:
+          - model: Model-A
+            score: 0.7
+            use_reasoning: false
+      
+      # ------------------------------------------------------------------------
+      # Health and Applied Sciences
+      # ------------------------------------------------------------------------
+      - name: health
+        system_prompt: "You are a health and medical information expert with knowledge of anatomy, physiology, diseases, treatments, preventive care, nutrition, and wellness. Provide accurate, evidence-based health information while emphasizing that your responses are for educational purposes only and should never replace professional medical advice, diagnosis, or treatment. Always encourage users to consult healthcare professionals for medical concerns."
+        model_scores:
+          - model: Model-B
+            score: 0.5
+            use_reasoning: false
+      
+      # ------------------------------------------------------------------------
+      # General/Fallback Category
+      # ------------------------------------------------------------------------
+      - name: other
+        system_prompt: "You are a helpful, knowledgeable, and versatile assistant. Provide accurate, thoughtful responses across a wide range of topics. When the topic is unclear or spans multiple domains, ask clarifying questions. Be honest about the limits of your knowledge and suggest resources when appropriate."
+        model_scores:
+          - model: mistral-small-24b-instruct-2501-fp8-dynamic-150
+            score: 0.7
+            use_reasoning: false
+    
+    # ============================================================================
+    # Default Model - Fallback When Classification Uncertain
+    # ============================================================================
+    default_model: mistral-small-24b-instruct-2501-fp8-dynamic-150
+    
+    # ============================================================================
+    # Reasoning Family Configurations
+    # ============================================================================
+    # Defines how different model families enable/disable reasoning mode
+    # This is critical for models that support Chain-of-Thought reasoning
+    reasoning_families:
+      # DeepSeek reasoning models
+      deepseek:
+        type: "chat_template_kwargs"
+        parameter: "thinking"
+      
+      # Qwen3 reasoning models
+      qwen3:
+        type: "chat_template_kwargs"
+        parameter: "enable_thinking"
+      
+      # OpenAI-style reasoning (o1, o3)
+      gpt-oss:
+        type: "reasoning_effort"
+        parameter: "reasoning_effort"
+      
+      gpt:
+        type: "reasoning_effort"
+        parameter: "reasoning_effort"
+    
+    # Global default reasoning effort level (low, medium, high)
+    default_reasoning_effort: high
+    
+    # ============================================================================
+    # API Configuration - Batch Processing
+    # ============================================================================
+    api:
+      batch_classification:
+        max_batch_size: 100  # Maximum requests in a single batch
+        concurrency_threshold: 10  # When to start batching
+        max_concurrency: 8  # Maximum parallel classifications
+        
+        # Metrics configuration for performance monitoring
+        metrics:
+          enabled: true
+          detailed_goroutine_tracking: true  # Track Go routine performance
+          high_resolution_timing: false  # Fine-grained timing (impacts perf)
+          sample_rate: 1.0  # Sample 100% of requests (reduce in production)
+          
+          # Histogram buckets for latency metrics (in seconds)
+          duration_buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30]
+          
+          # Histogram buckets for batch size metrics
+          size_buckets: [1, 2, 5, 10, 20, 50, 100, 200]
+    
+    # ============================================================================
+    # Observability Configuration - Tracing and Monitoring
+    # ============================================================================
+    observability:
+      tracing:
+        enabled: true  # Enable distributed tracing for debugging
+        provider: "opentelemetry"  # Options: opentelemetry, openinference, openllmetry
+        
+        exporter:
+          type: "stdout"  # Options: otlp, jaeger, zipkin, stdout
+          endpoint: "localhost:4317"  # OTLP endpoint (when type: otlp)
+          insecure: true  # Use insecure connection (no TLS) for local dev
+        
+        sampling:
+          type: "always_on"  # Options: always_on, always_off, probabilistic
+          rate: 1.0  # Sampling rate for probabilistic (0.0-1.0)
+        
+        # Resource attributes for identifying this service
+        resource:
+          service_name: "vllm-semantic-router"
+          service_version: "v0.1.0"
+          deployment_environment: "development"  # UPDATE: Change to production when ready
