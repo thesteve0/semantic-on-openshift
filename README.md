@@ -1,189 +1,350 @@
 # Semantic Router Deployment Guide
 
-This guide walks you through building and deploying the semantic router with baked-in classification models.
+This guide walks you through deploying the semantic router on OpenShift with automatic model downloads at startup.
 
 ## Prerequisites
 
 - OpenShift cluster access with `oc` CLI configured
-- Podman or Docker installed locally
 - Namespace created: `vllm-semantic-router-system`
+- vLLM backend services deployed and accessible (optional for testing classification only)
 
-## Step 1: Build the Custom Image
+## Architecture Overview
 
-```bash
-# Navigate to the directory containing your Dockerfile
-cd /path/to/your/semantic-router-project
+The deployment consists of:
+- **Semantic Router**: Official image `ghcr.io/vllm-project/semantic-router/extproc:latest`
+- **Init Container**: Downloads 4 ModernBERT classification models from HuggingFace to PVC
+- **Envoy Proxy**: Sidecar container for routing and observability
+- **Persistent Storage**: 10Gi for models, 5Gi for cache
 
-# Build the image with Podman
-podman build -t semantic-router-with-models:v1.0.0 -f Dockerfile .
+Models are downloaded once and persisted to PVC for fast subsequent startups.
 
-# Note: Build time will be ~10-15 minutes due to model downloads
-# The final image will be ~2-4GB depending on model sizes
-```
+## Step 1: Create Kubernetes Resources
 
-## Step 2: Push to Github Registry
+Apply the manifests in this order:
 
 ```bash
 # Log into OpenShift
 oc login --token=<your-token> --server=<your-api-server>
 oc project vllm-semantic-router-system
 
-podman build -t semantic-router-with-models:v1.0.0 -f Containerfile .
-podman login ghcr.io
-podman tag semantic-router-with-models:v1.0.0  ghcr.io/thesteve0/semantic-router-with-models:v1.0.0
-
-
-# Push the image
-podman p podman push ghcr.io/thesteve0/semantic-router-with-models:v1.0.0
-```
-
-## Step 3: Create Kubernetes Resources
-
-Apply the manifests in this order:
-
-```bash
-# Create the PVC first (for runtime caching)
-oc apply -f pvc.yaml
+# Create the PVCs first (for models and cache)
+oc apply -f openshift/pvc.yaml
 
 # Create the ConfigMaps
-oc apply -f envoy-config.yaml
-oc apply -f semantic-router-config.yaml
+oc apply -f openshift/envoy-configmap.yaml
+oc apply -f openshift/semantic-router-config.yaml
 
 # Create the Deployment
-oc apply -f deployment.yaml
+oc apply -f openshift/deployment.yaml
 
 # Create the Service
-oc apply -f service.yaml
+oc apply -f openshift/service.yaml
 ```
 
-## Step 4: Verify Deployment
+## Step 2: Monitor Model Download
+
+The init container will download 4 ModernBERT classification models from HuggingFace. This takes 2-5 minutes on first deployment.
 
 ```bash
-# Check pod status
+# Watch the init container download models
+oc logs -f deployment/semantic-router -c model-downloader
+
+# You should see output like:
+# Downloading category classifier model...
+# Downloading PII classifier model...
+# Downloading jailbreak classifier model...
+# Downloading PII token classifier model...
+# All classifier models downloaded successfully!
+```
+
+## Step 3: Verify Deployment
+
+```bash
+# Check pod status (should show 2/2 containers running)
 oc get pods -l app=semantic-router
 
 # Expected output:
 # NAME                               READY   STATUS    RESTARTS   AGE
-# semantic-router-xxxxxxxxxx-xxxxx   2/2     Running   0          2m
+# semantic-router-xxxxxxxxxx-xxxxx   2/2     Running   0          5m
 
 # Check logs - semantic router
-oc logs -f deploy/semantic-router -c semantic-router
+oc logs -f deployment/semantic-router -c semantic-router
 
-# Check logs - envoy proxy
-oc logs -f deploy/semantic-router -c envoy-proxy
+# Check logs - envoy proxy (JSON format)
+oc logs -f deployment/semantic-router -c envoy-proxy
 ```
 
-## Step 5: Test the Deployment
+## Step 4: Test the Deployment
 
-### Test 1: Check the /v1/models endpoint
+### Port-Forward Setup
 
 ```bash
-# Port-forward to access the service
-oc port-forward svc/semantic-router-service 8080:80
-
-# In another terminal, test the models endpoint
-curl http://localhost:8080/v1/models
+# Port-forward to Envoy proxy (main entry point)
+oc port-forward deployment/semantic-router 8080:8801
 ```
 
-### Test 2: Send a classification request
+### Test 1: Philosophy Query (Qwen with Reasoning)
+
+This query should be classified as "philosophy" and routed to the qwen-14b-quant model with reasoning enabled.
 
 ```bash
-# Send a math query
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
+  -X POST \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "test",
+    "model": "auto",
     "messages": [
-      {"role": "user", "content": "What is 2+2?"}
-    ]
+      {"role": "user", "content": "Please write 3 paragraphs comparing the epistemology of Immanuel Kant and Willard Van Orman Quine on how well we can actually understand shared experiences with other humans."}
+    ],
+    "temperature": 0.7,
+    "max_tokens": 2000
   }'
-
-# Check the Envoy logs to see the routing decision
-oc logs -f deploy/semantic-router -c envoy-proxy | jq
 ```
 
-Expected log output will show:
-- `router_category`: "math"
-- `router_confidence`: "0.95" (or similar)
-- `selected_endpoint`: "placeholder-model-a-service"
-- The request will fail (connection refused) because backends don't exist yet
+Expected behavior:
+- Category: `philosophy`
+- Model: `qwen-14b-quant`
+- Reasoning: enabled
+- Response includes `<thinking>` tags
 
-### Test 3: Check metrics
+### Test 2: Simple Math Query
 
 ```bash
-# Access Prometheus metrics
-curl http://localhost:8080:9190/metrics
+curl http://localhost:8080/v1/chat/completions \
+  -v -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto",
+    "messages": [
+      {"role": "user", "content": "What is 2 + 2."}
+    ],
+    "temperature": 0.7,
+    "max_tokens": 2000
+  }'
 ```
 
-## Step 6: Access Admin Interfaces
+Expected behavior:
+- Category: `other`
+- Model: `mistral-small-24b-instruct-2501-fp8-dynamic-150`
+- Quick response
+
+### Test 3: Medical Query (Specialized Model)
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -v -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto",
+    "messages": [
+      {"role": "user", "content": "For diffuse B-Cell non-Hodgkins lymphoma, what is the likelihood of curing a 40 year old male and what are the latest advances in treatment"}
+    ],
+    "temperature": 0.7,
+    "max_tokens": 2000
+  }'
+```
+
+Expected behavior:
+- Category: `health`
+- Model: `medtron3-phi4-14b`
+- Detailed evidence-based medical response
+
+### Test 4: Check Routing Decisions
+
+```bash
+# View Envoy access logs to see routing decisions
+oc logs deployment/semantic-router -c envoy-proxy --tail=10
+
+# Look for JSON fields:
+# - "selected_model": which model was chosen
+# - "selected_endpoint": IP:port of target backend
+# - "upstream_cluster": which cluster handled the request
+# - "response_code": HTTP status code
+```
+
+### Test 5: Check Metrics
+
+```bash
+# Access Prometheus metrics from semantic router
+curl http://localhost:9190/metrics
+```
+
+## Step 5: Access Admin Interfaces
 
 ### Envoy Admin Interface
 
 ```bash
 # Port-forward to Envoy admin
-oc port-forward svc/semantic-router-service 19000:19000
+oc port-forward deployment/semantic-router 19000:19000
 
+# In another terminal:
 # View cluster status
 curl http://localhost:19000/clusters
 
 # View config dump
-curl http://localhost:19000/config_dump
+curl http://localhost:19000/config_dump | jq
+
+# View stats
+curl http://localhost:19000/stats
 ```
 
 ## Troubleshooting
 
-### Pod won't start
+### Init container fails to download models
 
 ```bash
-# Describe the pod
+# Check init container logs
+oc logs deployment/semantic-router -c model-downloader
+
+# Common issues:
+# - Network connectivity to huggingface.co
+# - Insufficient PVC storage (need 10Gi)
+# - Rate limiting from HuggingFace
+```
+
+### Pod stuck in Init state
+
+```bash
+# Describe the pod to see init container status
 oc describe pod -l app=semantic-router
 
 # Check events
-oc get events --sort-by='.lastTimestamp'
+oc get events --sort-by='.lastTimestamp' | grep semantic-router
+
+# Verify PVC is bound
+oc get pvc
 ```
 
-### Models not loading
+### Models not loading in semantic router
 
 ```bash
-# Check if models are in the image
-oc exec deploy/semantic-router -c semantic-router -- ls -la /app/models
+# Check if models are on the PVC
+oc exec deployment/semantic-router -c semantic-router -- ls -la /app/models
 
 # Should show:
 # category_classifier_modernbert-base_model/
 # pii_classifier_modernbert-base_model/
 # jailbreak_classifier_modernbert-base_model/
 # pii_classifier_modernbert-base_presidio_token_model/
+
+# Check model file permissions
+oc exec deployment/semantic-router -c semantic-router -- find /app/models -type f -name "*.safetensors"
 ```
 
 ### Classification not working
 
 ```bash
 # Check semantic router logs for errors
-oc logs deploy/semantic-router -c semantic-router | grep -i error
+oc logs deployment/semantic-router -c semantic-router | grep -i error
 
 # Verify config is mounted correctly
-oc exec deploy/semantic-router -c semantic-router -- cat /app/config/config.yaml
+oc exec deployment/semantic-router -c semantic-router -- cat /app/config/config.yaml
+
+# Look for model loading messages in logs
+oc logs deployment/semantic-router -c semantic-router | grep -i "loading model"
 ```
 
-## Next Steps
+### Routing to wrong backend
 
-### Deploy LLM Backend Services
+```bash
+# Check Envoy logs to see routing decisions
+oc logs deployment/semantic-router -c envoy-proxy --tail=50 | jq '.selected_endpoint'
 
-When you're ready to deploy actual LLM services:
+# Verify vLLM endpoints are accessible
+oc get svc
 
-1. Create separate Deployments for your LLM models
-2. Create Services to expose them
-3. Update `semantic-router-config.yaml`:
+# Test direct connection to vLLM backend
+oc run test-curl --rm -it --image=curlimages/curl -- curl http://<vllm-service-ip>/v1/models
+```
+
+### Cache issues
+
+The semantic cache is stored in memory and persisted to PVC. To clear the cache:
+
+```bash
+# Restart the deployment
+oc rollout restart deployment/semantic-router
+
+# Or delete the cache PVC (will recreate on next start)
+oc delete pvc semantic-router-cache
+oc apply -f openshift/pvc.yaml
+```
+
+## Configuration
+
+### Configured vLLM Backends
+
+The semantic router is currently configured to route to three vLLM backends:
+
+1. **mistral-small-24b-instruct-2501-fp8-dynamic-150** (172.30.95.11:80)
+   - General purpose model
+   - Used for "other" category queries
+   - Default fallback model
+
+2. **qwen-14b-quant** (172.30.68.65:80)
+   - Reasoning-capable model
+   - Used for philosophy, engineering, computer science
+   - Supports `<thinking>` mode
+
+3. **medtron3-phi4-14b** (172.30.118.1:80)
+   - Medical fine-tuned model
+   - Used for health category queries
+   - Evidence-based responses
+
+### Configured Categories
+
+The router classifies queries into 5 main categories:
+
+- **computer science**: Routes to qwen-14b-quant
+- **engineering**: Routes to qwen-14b-quant
+- **philosophy**: Routes to qwen-14b-quant with reasoning enabled
+- **health**: Routes to medtron3-phi4-14b
+- **other**: Routes to mistral-small (default)
+
+### Updating Configuration
+
+To update the semantic router configuration:
+
+```bash
+# Edit the ConfigMap
+oc edit configmap semantic-router-config
+
+# Or apply changes from file
+oc apply -f openshift/semantic-router-config.yaml
+
+# Restart the deployment to pick up changes
+oc rollout restart deployment/semantic-router
+```
+
+### Adding New vLLM Backends
+
+1. Deploy your vLLM service and get its ClusterIP
+2. Update `semantic-router-config.yaml`:
    ```yaml
    vllm_endpoints:
-     - name: "model-a-endpoint"
-       address: "model-a-service.vllm-semantic-router-system.svc.cluster.local"
-       port: 8000
+     - name: "new-model-name"
+       address: 172.30.x.x  # ClusterIP of the vLLM service
+       port: 80
+       weight: 1
    ```
-4. Apply the updated config:
-   ```bash
-   oc apply -f semantic-router-config.yaml
-   oc rollout restart deploy/semantic-router
+3. Add model configuration:
+   ```yaml
+   model_config:
+     "new-model-name":
+       preferred_endpoints: ["new-model-name"]
+       pii_policy:
+         allow_by_default: true
+         pii_types_allowed: ["EMAIL_ADDRESS"]
+   ```
+4. Update category to use the new model:
+   ```yaml
+   categories:
+     - name: your-category
+       system_prompt: "Your prompt..."
+       model_scores:
+         - model: new-model-name
+           score: 0.7
+           use_reasoning: false
    ```
 
 ### Enable External Access
@@ -192,22 +353,10 @@ To expose the service outside the cluster:
 
 ```bash
 # Create a Route
-oc expose svc/semantic-router-service
+oc expose svc/semantic-router-service --port=http
 
 # Get the URL
 oc get route semantic-router-service
-```
-
-## Configuration Updates
-
-To update the semantic router configuration without rebuilding the image:
-
-```bash
-# Edit the ConfigMap
-oc edit configmap semantic-router-config
-
-# Restart the deployment to pick up changes
-oc rollout restart deploy/semantic-router
 ```
 
 ## Cleanup
@@ -215,9 +364,16 @@ oc rollout restart deploy/semantic-router
 To remove everything:
 
 ```bash
-oc delete -f service.yaml
-oc delete -f deployment.yaml
-oc delete -f semantic-router-config.yaml
-oc delete -f envoy-config.yaml
-oc delete -f pvc.yaml
+oc delete -f openshift/service.yaml
+oc delete -f openshift/deployment.yaml
+oc delete -f openshift/semantic-router-config.yaml
+oc delete -f openshift/envoy-configmap.yaml
+oc delete -f openshift/pvc.yaml
 ```
+
+## Additional Resources
+
+- **Semantic Router Documentation**: https://vllm-semantic-router.com/docs/overview/semantic-router-overview
+- **GitHub Repository**: https://github.com/vllm-project/semantic-router
+- **Supported Categories**: https://vllm-semantic-router.com/docs/overview/categories/supported-categories
+- **HuggingFace Models**: https://huggingface.co/LLM-Semantic-Router
