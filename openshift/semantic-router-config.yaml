@@ -71,9 +71,9 @@ data:
         port: 80
         weight: 1  # Load balancing weight
 
-      - name: "model-b-endpoint"
-        address: 127.0.0.1  # Phase 1: Localhost (no backend yet)
-        port: 8000
+      - name: "qwen-14b-quant"
+        address: 172.30.68.65  # this is the service IP in the cluster
+        port: 80
         weight: 1
     
     # ============================================================================
@@ -84,14 +84,14 @@ data:
       "mistral-small-24b-instruct-2501-fp8-dynamic-150":
         preferred_endpoints: ["mistral-small-24b-instruct-2501-fp8-dynamic-150"]
         pii_policy:
-          allow_by_default: false  # Block all PII by default
+          allow_by_default: true  # Block all PII by default
           pii_types_allowed: ["EMAIL_ADDRESS"]  # Only allow emails through
       
-      "Model-B":
+      "qwen-14b-quant":
         reasoning_family: "qwen3"
-        preferred_endpoints: ["model-b-endpoint"]
+        preferred_endpoints: ["qwen-14b-quant"]
         pii_policy:
-          allow_by_default: false
+          allow_by_default: true
           pii_types_allowed: ["EMAIL_ADDRESS"]
     
     # ============================================================================
@@ -118,6 +118,7 @@ data:
     # ============================================================================
     # Category Definitions - 15 Specialized Categories
     # ============================================================================
+    # https://vllm-semantic-router.com/docs/overview/categories/supported-categories    
     # Each category has:
     # - name: Category identifier
     # - system_prompt: Contextual prompt for the LLM
@@ -126,92 +127,31 @@ data:
       # ------------------------------------------------------------------------
       # STEM Categories
       # ------------------------------------------------------------------------
-      - name: math
-        system_prompt: "You are a mathematics expert with deep knowledge of algebra, calculus, geometry, statistics, and mathematical reasoning. Provide step-by-step solutions, show your work clearly, explain mathematical concepts in an understandable way, and verify your answers. When solving problems, break down complex calculations into manageable steps."
-        model_scores:
-          - model: Model-A
-            score: 1.0  # Best model for math
-            use_reasoning: false  # Enable reasoning for complex math problems
-      
-      - name: physics
-        system_prompt: "You are a physics expert with comprehensive understanding of classical mechanics, thermodynamics, electromagnetism, quantum mechanics, and relativity. Provide clear explanations grounded in physical laws, include mathematical derivations when appropriate, and connect theoretical concepts to real-world phenomena. Use SI units consistently."
-        model_scores:
-          - model: Model-A
-            score: 0.7
-            use_reasoning: false  # Physics benefits from step-by-step reasoning
-      
-      - name: chemistry
-        system_prompt: "You are a chemistry expert specializing in organic, inorganic, physical, and analytical chemistry. Explain chemical reactions with balanced equations, discuss molecular structures and bonding, describe laboratory techniques safely, and connect chemistry concepts to practical applications. Always emphasize safety when discussing chemical procedures."
-        model_scores:
-          - model: Model-A
-            score: 0.6
-            use_reasoning: false  # Complex chemistry requires reasoning
-      
-      - name: biology
-        system_prompt: "You are a biology expert with comprehensive knowledge spanning molecular biology, genetics, cell biology, ecology, evolution, anatomy, physiology, and biotechnology. Explain biological concepts with scientific accuracy, use appropriate terminology, provide examples from current research, and emphasize the interconnectedness of biological systems."
-        model_scores:
-          - model: Model-A
-            score: 0.9
-            use_reasoning: false
       
       - name: computer science
         system_prompt: "You are a computer science expert with deep knowledge of algorithms, data structures, programming languages, software engineering, databases, networks, and computer architecture. Provide clear, practical solutions with well-commented code examples when helpful. Explain time and space complexity, discuss trade-offs, and follow best practices."
         model_scores:
-          - model: Model-A
+          - model: qwen-14b-quant
             score: 0.6
             use_reasoning: false
       
       - name: engineering
         system_prompt: "You are an engineering expert with knowledge across mechanical, electrical, civil, chemical, software, and systems engineering disciplines. Apply engineering principles, design methodologies, and problem-solving approaches to provide practical solutions. Consider safety, efficiency, sustainability, and cost-effectiveness. Use technical precision while explaining concepts clearly."
         model_scores:
-          - model: Model-A
+          - model: qwen-14b-quant
             score: 0.7
             use_reasoning: false
       
       # ------------------------------------------------------------------------
       # Social Sciences and Humanities
       # ------------------------------------------------------------------------
-      - name: business
-        system_prompt: "You are a senior business consultant and strategic advisor with expertise in corporate strategy, operations management, financial analysis, marketing, and organizational development. Provide practical, actionable business advice backed by proven methodologies and industry best practices. Consider market dynamics, competitive landscape, and stakeholder interests in your recommendations."
-        model_scores:
-          - model: Model-B
-            score: 0.7
-            use_reasoning: false  # Business performs better without reasoning
-      
-      - name: economics
-        system_prompt: "You are an economics expert with deep understanding of microeconomics, macroeconomics, econometrics, financial markets, monetary policy, fiscal policy, and international trade. Analyze economic phenomena using established principles, provide data-driven insights, and explain complex economic concepts in accessible terms. Consider both theoretical frameworks and real-world applications."
-        model_scores:
-          - model: Model-A
-            score: 1.0
-            use_reasoning: false
-      
-      - name: law
-        system_prompt: "You are a knowledgeable legal expert with comprehensive understanding of legal principles, case law, statutory interpretation, and legal procedures across multiple jurisdictions. Provide accurate legal information and analysis while clearly stating that your responses are for informational purposes only and do not constitute legal advice. Always recommend consulting qualified legal professionals for specific matters."
-        model_scores:
-          - model: Model-B
-            score: 0.4
-            use_reasoning: false
-      
-      - name: psychology
-        system_prompt: "You are a psychology expert with deep knowledge of cognitive processes, behavioral patterns, mental health, developmental psychology, social psychology, and therapeutic approaches. Provide evidence-based insights grounded in psychological research and theory. When discussing mental health topics, emphasize the importance of professional consultation and avoid providing diagnostic or therapeutic advice."
-        model_scores:
-          - model: Model-B
-            score: 0.6
-            use_reasoning: false
       
       - name: philosophy
         system_prompt: "You are a philosophy expert with comprehensive knowledge of philosophical traditions, ethical theories, logic, metaphysics, epistemology, and political philosophy. Engage with complex philosophical questions by presenting multiple perspectives, analyzing arguments rigorously, and encouraging critical thinking. Draw connections between philosophical concepts and contemporary issues."
         model_scores:
-          - model: Model-B
+          - model: qwen-14b-quant
             score: 0.5
-            use_reasoning: false
-      
-      - name: history
-        system_prompt: "You are a historian with expertise across different time periods, regions, and cultures. Provide accurate historical context, analyze cause-and-effect relationships, discuss multiple perspectives, and connect past events to present-day implications. Cite specific dates, events, and historical figures when relevant. Acknowledge historiographical debates and evolving interpretations."
-        model_scores:
-          - model: Model-A
-            score: 0.7
-            use_reasoning: false
+            use_reasoning: true
       
       # ------------------------------------------------------------------------
       # Health and Applied Sciences
