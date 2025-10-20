@@ -30,7 +30,7 @@ data:
     semantic_cache:
       enabled: true
       backend_type: "memory"  # Options: "memory" or "milvus"
-      similarity_threshold: 0.8  # How similar queries must be for cache hit
+      similarity_threshold: 0.95  # How similar queries must be for cache hit
       max_entries: 1000  # Maximum cached responses (memory backend only)
       ttl_seconds: 3600  # Time-to-live: 1 hour
       eviction_policy: "fifo"  # First-in-first-out when max_entries reached
@@ -61,10 +61,7 @@ data:
     # ============================================================================
     # vLLM Endpoint Configuration
     # ============================================================================
-    # IMPORTANT: These endpoints currently point to non-existent services
-    # When you deploy actual LLM services, update these addresses to:
-    # - Kubernetes service names (e.g., "model-a-service.namespace.svc.cluster.local")
-    # - Or external endpoints if using hosted models
+    
     vllm_endpoints:
       - name: "mistral-small-24b-instruct-2501-fp8-dynamic-150"
         address: 172.30.95.11  # this is the service IP in the cluster
@@ -73,6 +70,11 @@ data:
 
       - name: "qwen-14b-quant"
         address: 172.30.68.65  # this is the service IP in the cluster
+        port: 80
+        weight: 1     
+      
+      - name: "medical-finetune"
+        address: 172.30.118.1  # this is the service IP in the cluster
         port: 80
         weight: 1
     
@@ -90,6 +92,12 @@ data:
       "qwen-14b-quant":
         reasoning_family: "qwen3"
         preferred_endpoints: ["qwen-14b-quant"]
+        pii_policy:
+          allow_by_default: true
+          pii_types_allowed: ["EMAIL_ADDRESS"]
+          
+      "medtron3-phi4-14b":
+        preferred_endpoints: ["medical-finetune"]
         pii_policy:
           allow_by_default: true
           pii_types_allowed: ["EMAIL_ADDRESS"]
@@ -157,9 +165,9 @@ data:
       # Health and Applied Sciences
       # ------------------------------------------------------------------------
       - name: health
-        system_prompt: "You are a health and medical information expert with knowledge of anatomy, physiology, diseases, treatments, preventive care, nutrition, and wellness. Provide accurate, evidence-based health information while emphasizing that your responses are for educational purposes only and should never replace professional medical advice, diagnosis, or treatment. Always encourage users to consult healthcare professionals for medical concerns."
+        system_prompt: "You are a health and medical information expert with knowledge of anatomy, physiology, diseases, treatments, preventive care, nutrition, and wellness. Provide accurate, evidence-based health information while emphasizing that your responses are for educational purposes only and should never replace professional medical advice, diagnosis, or treatment. Always encourage users to consult healthcare professionals for medical concerns. You will default to a lengthy explanation using evidence based medicine solutions. Where possible you cite studies or direct research. Assume the user is a biologist and will understand and appreciate a more scientific answer. "
         model_scores:
-          - model: Model-B
+          - model: medtron3-phi4-14b
             score: 0.5
             use_reasoning: false
       
