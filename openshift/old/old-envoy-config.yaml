@@ -55,12 +55,34 @@ data:
                               route:
                                 cluster: semantic_router_cluster
                                 timeout: 120s
-                            
-                            # Catch-all route - routes to vLLM backend
+
+                            # Route to Qwen model based on header (check this first)
+                            - match:
+                                prefix: "/"
+                                headers:
+                                - name: "x-gateway-destination-endpoint"
+                                  string_match:
+                                    exact: "172.30.68.65:80"
+                              route:
+                                cluster: qwen_cluster
+                                timeout: 120s
+
+                            # Route to Mistral model based on header
+                            - match:
+                                prefix: "/"
+                                headers:
+                                - name: "x-gateway-destination-endpoint"
+                                  string_match:
+                                    exact: "172.30.95.11:80"
+                              route:
+                                cluster: mistral_cluster
+                                timeout: 120s
+
+                            # Default fallback route to Mistral
                             - match:
                                 prefix: "/"
                               route:
-                                cluster: vllm_mistral_cluster
+                                cluster: mistral_cluster
                                 timeout: 120s
                               # Add response headers to show routing decision
                               response_headers_to_add:
@@ -90,6 +112,9 @@ data:
                             response_body_mode: "BUFFERED"
                             request_trailer_mode: "SKIP"
                             response_trailer_mode: "SKIP"
+                          mutation_rules:
+                            allow_all_routing: true
+                            allow_envoy: true
                           # Fail requests if ExtProc fails (for troubleshooting)
                           failure_mode_allow: false
                           # 5s timeout for classification
@@ -158,19 +183,40 @@ data:
                 http_protocol_options: {}
         
         # vLLM backend cluster - Mistral model
-        - name: vllm_mistral_cluster
+        - name: mistral_cluster
           connect_timeout: 5s
           per_connection_buffer_limit_bytes: 52428800
           type: STATIC
           lb_policy: ROUND_ROBIN
           load_assignment:
-            cluster_name: vllm_mistral_cluster
+            cluster_name: mistral_cluster
             endpoints:
               - lb_endpoints:
                   - endpoint:
                       address:
                         socket_address:
                           address: 172.30.95.11
+                          port_value: 80
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http_protocol_options: {}
+
+        # vLLM backend cluster - Qwen model
+        - name: qwen_cluster
+          connect_timeout: 5s
+          per_connection_buffer_limit_bytes: 52428800
+          type: STATIC
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: qwen_cluster
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: 172.30.68.65
                           port_value: 80
           typed_extension_protocol_options:
             envoy.extensions.upstreams.http.v3.HttpProtocolOptions:

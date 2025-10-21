@@ -1,3 +1,22 @@
+---
+# PVC for router classifier models
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: semantic-router-models
+  namespace: vllm-semantic-router-system
+  labels:
+    app: semantic-router
+    app.kubernetes.io/name: vllm-semantic-router-system
+    app.kubernetes.io/component: router
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+# PVC for router cache
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -5,12 +24,10 @@ metadata:
   namespace: vllm-semantic-router-system
   labels:
     app: semantic-router
-    component: cache-storage
+    app.kubernetes.io/component: router
 spec:
   accessModes:
-    - ReadWriteOnce  # Single pod access (semantic-router pod)
+    - ReadWriteOnce
   resources:
     requests:
-      storage: 5Gi  # 5GB for runtime caching (HF cache, transformers, etc.)
-  # storageClassName not specified - uses cluster default dynamic provisioner
-  # If you need a specific storage class, add: storageClassName: <your-storage-class>
+      storage: 5Gi

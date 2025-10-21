@@ -1,49 +1,55 @@
-# vLLM Semantic Router - Kubernetes Deployment Project
+# vLLM Semantic Router - OpenShift Deployment Project
 
 ## Project Overview
 
-This project deploys the vLLM Semantic Router as an intelligent request classifier and router for Large Language Models (LLMs). The semantic router analyzes incoming requests, classifies them by category (math, science, business, etc.), detects security issues (PII, jailbreaks), and routes them to appropriate backend models.
+This project deploys the vLLM Semantic Router as an intelligent request classifier and router for Large Language Models (LLMs). The semantic router analyzes incoming requests, classifies them by category (computer science, philosophy, health, etc.), detects security issues (PII, jailbreaks), and routes them to appropriate backend models.
 
-**Purpose:** Demo for booth presentation at a conference/trade show  
-**Environment:** Red Hat OpenShift AI cluster  
-**Current Phase:** Phase 1 - Getting semantic router infrastructure working (no LLM backends yet)
+**Purpose:** Production deployment with intelligent routing to specialized models
+**Environment:** Red Hat OpenShift AI cluster
+**Current Phase:** Fully operational with 3 vLLM backends
 
-## Multi-Phase Project Plan
+## System Status
 
-### Phase 1: Semantic Router Infrastructure (CURRENT)
-- ✅ Build custom image with baked-in ModernBERT classification models
-- 🔄 Deploy semantic-router + Envoy proxy pod
-- 🔄 Verify classification and routing decisions work
-- 🔄 Test all safety features (PII detection, jailbreak guard)
-- **Goal:** Router classifies requests and shows routing decisions, even without backends
+### ✅ FULLY OPERATIONAL
+- ✅ Semantic router deployed with official image
+- ✅ Init container downloads ModernBERT classification models to PVC
+- ✅ Envoy proxy integrated for routing and observability
+- ✅ 3 vLLM backends deployed and accessible
+- ✅ Classification working across 5 categories
+- ✅ Reasoning mode enabled for philosophy queries
+- ✅ End-to-end inference working
 
-### Phase 2: LLM Backend Deployment (FUTURE)
-- Deploy actual LLM models (likely using vLLM, KServe, or llm-d)
-- Create separate Deployments and Services for model-a and model-b
-- Update semantic router config to point to real services
-- End-to-end testing with real inference
+## Architecture Overview
 
-### Phase 3: Demo Polish (FUTURE)
-- Monitoring dashboards (Grafana)
-- Demo scripts and test queries
-- Documentation for booth staff
-- Performance optimization
+### Components
+1. **Semantic Router Pod** (2 containers)
+   - semantic-router: `ghcr.io/vllm-project/semantic-router/extproc:latest`
+   - envoy-proxy: `envoyproxy/envoy:v1.35.3`
+2. **Init Container**: Downloads 4 ModernBERT models from HuggingFace
+3. **PVCs**: 10Gi for models, 5Gi for cache
+4. **vLLM Backends**: 3 separate model services
+
+### Request Flow
+```
+Client → Envoy (8801) → ExtProc (semantic-router:50051) → Envoy routing → vLLM backend
+```
 
 ## Critical Architectural Decisions
 
 ### ✅ CORRECT Approach (What We're Doing)
-1. **Bake models into image:** Classification models downloaded at build time, not runtime
-2. **No GPU for router:** Semantic router uses CPU-based Rust/Candle inference, doesn't need GPUs
-3. **Separate pods:** Router in one pod, LLMs will be in separate pods (Phase 2)
-4. **No initContainer:** Models are in the image, so no download needed at pod start
-5. **Multi-stage Dockerfile:** Python stage downloads models, then copy to semantic router base image
+1. **Use official image:** No custom Dockerfile, use `ghcr.io/vllm-project/semantic-router/extproc:latest`
+2. **Init container for models:** Downloads models to PVC on first start, idempotent checks for subsequent starts
+3. **No GPU for router:** Semantic router uses CPU-based Rust/Candle inference
+4. **Separate pods:** Router in one pod, each LLM in its own pod
+5. **PVC persistence:** Models downloaded once, reused across restarts
+6. **Dynamic routing:** Envoy uses ORIGINAL_DST cluster with header-based destination
 
 ### ❌ INCORRECT Approach (What to Avoid)
-1. ❌ Don't put LLMs in the same pod as semantic router (tight coupling, can't scale independently)
-2. ❌ Don't use initContainer for model downloads (slow startup, unreliable)
-3. ❌ Don't request GPU nodes for semantic router (wastes resources)
+1. ❌ Don't build custom Docker images (use official image)
+2. ❌ Don't put LLMs in the same pod as semantic router
+3. ❌ Don't request GPU nodes for semantic router
 4. ❌ Don't write Python server code (semantic router is a pre-built Go/Rust binary)
-5. ❌ Don't share PVCs between router and LLMs (blast radius, permissions issues)
+5. ❌ Don't share PVCs between router and LLMs
 
 ## Key Technical Details
 
@@ -51,8 +57,9 @@ This project deploys the vLLM Semantic Router as an intelligent request classifi
 - **What it is:** Envoy ExtProc (External Processor) service written in Go + Rust
 - **Base image:** `ghcr.io/vllm-project/semantic-router/extproc:latest`
 - **Classification models:** 4 ModernBERT models for category, PII, jailbreak, PII-token detection
-- **Model location in image:** `/app/models/` with specific subdirectories
+- **Model location:** `/app/models/` on PVC (downloaded by init container)
 - **Communication:** gRPC on port 50051 (ExtProc), HTTP on port 8080 (classify API)
+- **Metrics:** Prometheus metrics on port 9190
 
 ### Two Separate Projects Named "Semantic Router"
 ⚠️ **IMPORTANT:** There are TWO different projects called "semantic-router":
@@ -81,9 +88,32 @@ The semantic router expects a SPECIFIC configuration format:
 
 ### Envoy Integration
 - **Pattern:** Envoy calls semantic router via ExtProc on every request
-- **Timeouts:** 5s for classification, 120s for routing to LLM
-- **Headers set by router:** `x-gateway-destination-endpoint`, `x-router-category`, `x-router-confidence`, `x-selected-model`
+- **Timeouts:** 300s for both classification and routing to LLM
+- **Headers set by router:** `x-gateway-destination-endpoint`, `x-selected-model`
 - **Logging:** Extensive JSON access logs show all routing decisions
+- **Routing mechanism:** ORIGINAL_DST cluster with `use_http_header: true`
+- **Entry point:** Envoy listens on port 8801
+
+### vLLM Backends (Deployed)
+
+The system currently has 3 vLLM backends deployed:
+
+1. **mistral-small-24b-instruct-2501-fp8-dynamic-150**
+   - Address: 172.30.95.11:80
+   - Purpose: General purpose, default fallback
+   - Used for: "other" category queries
+
+2. **qwen-14b-quant**
+   - Address: 172.30.68.65:80
+   - Purpose: Reasoning-capable model
+   - Used for: computer science, engineering, philosophy
+   - Supports: Chain-of-thought reasoning (`<thinking>` mode)
+
+3. **medtron3-phi4-14b** (medical fine-tune)
+   - Address: 172.30.118.1:80
+   - Purpose: Medical domain specialist
+   - Used for: health category queries
+   - Configured for: Evidence-based, detailed medical responses
 
 ## OpenShift-Specific Requirements
 
@@ -115,36 +145,37 @@ Only the LLM containers (Phase 2) will need GPU resources.
 ## Project Structure
 
 ```
-semantic-router/
-├── Dockerfile                          # Multi-stage build with models
+semantic-on-openshift/
 ├── openshift/
-│   ├── deployment.yaml                 # Pod with semantic-router + envoy
+│   ├── deployment.yaml                 # Pod with init container, semantic-router + envoy
 │   ├── service.yaml                    # Exposes ports 80, 8080, 9190, 19000
-│   ├── pvc.yaml                        # 5Gi for runtime caching
-│   ├── envoy-config.yaml              # ExtProc integration config
-│   └── semantic-router-config.yaml    # 15 categories, safety features
-├── README.md                 # Deployment guide
+│   ├── pvc.yaml                        # 10Gi for models, 5Gi for cache
+│   ├── envoy-configmap.yaml           # ExtProc integration config
+│   └── semantic-router-config.yaml    # 5 categories, safety features, 3 backends
+├── README.md                           # Deployment guide
 └── claude.md                           # This file - project context
 ```
 
-## Current Status and Known Issues
+## Current Status
 
-### What's Working
-- ✅ Dockerfile builds successfully (multi-stage with model downloads)
-- ✅ All manifests follow Kubernetes best practices
+### ✅ Everything Working
+- ✅ All manifests deployed successfully
+- ✅ Init container downloads models successfully
+- ✅ Models persisted to PVC (10Gi)
 - ✅ OpenShift-compatible security contexts
 - ✅ Configuration matches semantic router's expected schema
+- ✅ Classification working across all 5 categories
+- ✅ Routing to correct vLLM backends
+- ✅ Reasoning mode enabled for philosophy queries
+- ✅ End-to-end inference working
+- ✅ Semantic caching operational
 
-### Current Issue
-There's an error when trying to start the project. The error details are not yet specified.
-
-### What to Check When Troubleshooting
-1. **Image build:** Did models download completely? Check image layers
-2. **Model paths:** Are models at `/app/models/category_classifier_modernbert-base_model/` etc.?
-3. **Permissions:** Can UID 1001 read the model files?
-4. **Config mounting:** Is the ConfigMap mounted correctly at `/app/config/`?
-5. **gRPC port:** Is semantic router listening on 50051?
-6. **Envoy connectivity:** Can Envoy reach semantic router on localhost:50051?
+### Key Learnings
+1. **Init container approach works well:** Models download once, persist to PVC, fast subsequent starts
+2. **ORIGINAL_DST cluster:** Envoy's ORIGINAL_DST cluster type with `use_http_header: true` enables dynamic routing
+3. **Header-based routing:** Semantic router sets `x-gateway-destination-endpoint` to specify target backend
+4. **Port forwarding:** Use `oc port-forward deployment/semantic-router 8080:8801` to access via Envoy
+5. **Model download time:** First deployment takes 2-5 minutes for model downloads
 
 ## Important URLs and Documentation
 
@@ -155,20 +186,21 @@ There's an error when trying to start the project. The error details are not yet
 
 ## Configuration Highlights
 
-### 15 Classification Categories
+### 5 Active Classification Categories
 The router classifies queries into these domains:
-- **STEM:** math, physics, chemistry, biology, computer science, engineering
-- **Social Sciences:** business, economics, law, psychology, philosophy, history
-- **Health:** medical and wellness information
-- **Other:** general fallback category
+- **computer science:** Routes to qwen-14b-quant without reasoning
+- **engineering:** Routes to qwen-14b-quant without reasoning
+- **philosophy:** Routes to qwen-14b-quant WITH reasoning enabled
+- **health:** Routes to medtron3-phi4-14b (medical specialist)
+- **other:** Routes to mistral-small (general purpose fallback)
 
 Each category has a detailed system prompt and model scoring (which model to use, whether to enable reasoning).
 
 ### Safety Features
-- **PII Detection:** Blocks or masks personally identifiable information
-- **Jailbreak Guard:** Detects prompt injection and jailbreak attempts
-- **Semantic Caching:** Caches responses based on semantic similarity (0.8 threshold)
-- **Content Filtering:** Configurable topic blocking
+- **PII Detection:** Identifies personally identifiable information
+- **Jailbreak Guard:** Detects prompt injection and jailbreak attempts (threshold: 0.7)
+- **Semantic Caching:** Caches responses based on semantic similarity (0.95 threshold)
+- **PII Policy:** Configured per-model, allows EMAIL_ADDRESS by default
 
 ### Reasoning Families
 Supports Chain-of-Thought reasoning for different model families:
@@ -176,83 +208,117 @@ Supports Chain-of-Thought reasoning for different model families:
 - **deepseek:** `thinking` parameter
 - **gpt/gpt-oss:** `reasoning_effort` parameter
 
-Math, physics, and chemistry queries enable reasoning by default.
+Philosophy queries enable reasoning by default. Default reasoning effort: high.
 
-## Demo Requirements
+## Use Cases and Benefits
 
-### Booth Presentation Goals
-1. Show intelligent routing based on query content
-2. Demonstrate safety features (PII detection, jailbreak blocking)
-3. Highlight 15-category classification with confidence scores
-4. Display routing decisions in real-time (logs/headers)
-5. Explain cost optimization (routing simple queries to smaller models)
+### Intelligent Routing
+1. Routes queries to specialized models based on content
+2. Philosophy queries get reasoning-capable model with `<thinking>` mode
+3. Medical queries route to domain-specific fine-tuned model
+4. Simple queries use general-purpose model (cost optimization)
 
-### Phase 1 Demo (Current)
-- Show classification working (category, confidence, routing target)
-- Display logs showing "would route to Model-A" even without backends
-- Demonstrate PII detection blocking sensitive information
-- Test jailbreak guard with injection attempts
+### Safety and Compliance
+- PII detection prevents leaking sensitive information
+- Jailbreak guard blocks prompt injection attempts
+- Per-model PII policies for granular control
 
-### Phase 2 Demo (Future)
-- End-to-end inference with actual LLM responses
-- Side-by-side comparison of specialized vs general models
-- Performance metrics (latency, cost savings)
+### Performance Optimization
+- Semantic caching reduces redundant inference (0.95 similarity threshold)
+- CPU-based classification adds minimal latency (15-50ms)
+- Smart routing optimizes cost vs. quality tradeoff
 
 ## Working with This Project
 
-### Build Commands
-```bash
-podman build -t semantic-router-with-models:v1.0.0 .
-# Push to Github container registry
-```
-
 ### Deploy Commands
 ```bash
+# Deploy in order
 oc apply -f openshift/pvc.yaml
-oc apply -f openshift/envoy-config.yaml
+oc apply -f openshift/envoy-configmap.yaml
 oc apply -f openshift/semantic-router-config.yaml
 oc apply -f openshift/deployment.yaml
 oc apply -f openshift/service.yaml
+
+# Watch init container download models (first deployment only)
+oc logs -f deployment/semantic-router -c model-downloader
 ```
 
 ### Debugging Commands
 ```bash
-# Check pod status
+# Check pod status (should show 2/2 Ready)
 oc get pods -l app=semantic-router
 
 # View semantic router logs
-oc logs -f deploy/semantic-router -c semantic-router
+oc logs -f deployment/semantic-router -c semantic-router
 
-# View Envoy logs (JSON format, pipe through jq)
-oc logs -f deploy/semantic-router -c envoy-proxy | jq
+# View Envoy logs (JSON format, shows routing decisions)
+oc logs -f deployment/semantic-router -c envoy-proxy
 
-# Check if models are in image
-oc exec deploy/semantic-router -c semantic-router -- ls -la /app/models
+# Check if models are downloaded to PVC
+oc exec deployment/semantic-router -c semantic-router -- ls -la /app/models
 
 # Verify config
-oc exec deploy/semantic-router -c semantic-router -- cat /app/config/config.yaml
+oc exec deployment/semantic-router -c semantic-router -- cat /app/config/config.yaml
 
-# Port forward for testing
-oc port-forward svc/semantic-router-service 8080:80
+# Port forward for testing (to Envoy proxy)
+oc port-forward deployment/semantic-router 8080:8801
+
+# Access Envoy admin interface
+oc port-forward deployment/semantic-router 19000:19000
 ```
 
 ### Test Queries
+
+#### Philosophy Query (Reasoning Enabled)
 ```bash
-# Math query (should route to Model-A with reasoning)
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
+  -X POST \
   -H "Content-Type: application/json" \
-  -d '{"model": "test", "messages": [{"role": "user", "content": "What is 2+2?"}]}'
-
-# Business query (should route to Model-B without reasoning)
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "test", "messages": [{"role": "user", "content": "How do I improve quarterly revenue?"}]}'
-
-# PII test (should be blocked)
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "test", "messages": [{"role": "user", "content": "My SSN is 123-45-6789"}]}'
+  -d '{
+    "model": "auto",
+    "messages": [
+      {"role": "user", "content": "Please write 3 paragraphs comparing the epistemology of Immanuel Kant and Willard Van Orman Quine on how well we can actually understand shared experiences with other humans."}
+    ],
+    "temperature": 0.7,
+    "max_tokens": 2000
+  }'
 ```
+
+Expected: Routes to qwen-14b-quant with reasoning, response includes `<thinking>` tags
+
+#### Simple Math Query
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -v -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto",
+    "messages": [
+      {"role": "user", "content": "What is 2 + 2."}
+    ],
+    "temperature": 0.7,
+    "max_tokens": 2000
+  }'
+```
+
+Expected: Routes to mistral-small (other category), quick response
+
+#### Medical Query
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -v -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto",
+    "messages": [
+      {"role": "user", "content": "For diffuse B-Cell non-Hodgkins lymphoma, what is the likelihood of curing a 40 year old male and what are the latest advances in treatment"}
+    ],
+    "temperature": 0.7,
+    "max_tokens": 2000
+  }'
+```
+
+Expected: Routes to medtron3-phi4-14b (health category), detailed evidence-based response
 
 ## User Preferences & Communication Style
 
@@ -270,7 +336,11 @@ When I get stuck, remind me:
 ## Important Reminders
 
 - ⚠️ **No PyTorch needed** - Router uses Rust/Candle, not Python ML frameworks
-- ⚠️ **Check official docs** - LLM hallucinations are common with CLI flags
-- ⚠️ **Don't assume localhost LLMs yet** - Phase 1 has no backends running
-- ⚠️ **This is a demo** - Focus on "wow factor" and clear explanation over production optimization
-- ⚠️ **OpenShift security is strict** - Always test security contexts before deploying
+- ⚠️ **No custom Dockerfile** - Use official image `ghcr.io/vllm-project/semantic-router/extproc:latest`
+- ⚠️ **Init container handles models** - Models download to PVC on first start, idempotent checks on restarts
+- ⚠️ **Port forward to 8801** - Envoy listens on 8801, use `oc port-forward deployment/semantic-router 8080:8801`
+- ⚠️ **Check official docs** - Refer to https://vllm-semantic-router.com for latest configuration options
+- ⚠️ **OpenShift security is strict** - All containers have security contexts with dropped capabilities
+- ⚠️ **Model download time** - First deployment takes 2-5 minutes, subsequent starts are fast
+- ⚠️ **ORIGINAL_DST cluster** - Envoy uses ORIGINAL_DST with header-based routing, not static clusters
+- ⚠️ **3 vLLM backends deployed** - Mistral (general), Qwen (reasoning), Medtron (medical)
